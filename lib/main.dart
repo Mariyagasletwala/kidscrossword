@@ -571,6 +571,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   text: "The faster you complete the puzzle, the higher your score!",
                   icon: Icons.emoji_events,
                 ),
+                SizedBox(height: 15),
+                _InstructionItem(
+                  number: "6",
+                  text: "Use the undo button to remove the last letter you typed.",
+                  icon: Icons.undo,
+                ),
               ],
             ),
           ),
@@ -622,31 +628,31 @@ class _InstructionItem extends StatelessWidget {
         Container(
           width: 30,
           height: 30,
-          decoration: BoxDecoration(
+          decoration: const BoxDecoration(
             color: Colors.blue,
             shape: BoxShape.circle,
           ),
           child: Center(
             child: Text(
               number,
-              style: TextStyle(
+              style: const TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.bold,
               ),
             ),
           ),
         ),
-        SizedBox(width: 10),
+        const SizedBox(width: 10),
         Expanded(
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Icon(icon, color: Colors.blue, size: 20),
-              SizedBox(width: 5),
+              const SizedBox(width: 5),
               Expanded(
                 child: Text(
                   text,
-                  style: TextStyle(fontSize: 16),
+                  style: const TextStyle(fontSize: 16),
                 ),
               ),
             ],
@@ -656,6 +662,7 @@ class _InstructionItem extends StatelessWidget {
     );
   }
 }
+
 class GameScreen extends StatefulWidget {
   final String difficulty;
 
@@ -676,12 +683,27 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   String _selectedClue = '';
   int _selectedClueIndex = -1;
   bool _isAcross = true;
+  
+  // Selected cell coordinates - improved for better cell navigation
+  int _selectedRow = -1;
+  int _selectedCol = -1;
+  
+  // To track history for undo functionality
+  List<CellHistoryEntry> _historyStack = [];
+  
+  // Error handling state
+  bool _hasError = false;
+  int _errorRow = -1;
+  int _errorCol = -1;
+  Timer? _errorTimer;
+
   final FocusNode _focusNode = FocusNode();
   final TextEditingController _textController = TextEditingController();
   late ConfettiController _confettiController;
   final AudioPlayer _audioPlayer = AudioPlayer();
   late AnimationController _hintAnimation;
   late AnimationController _shakeAnimation;
+  late AnimationController _errorAnimation;
 
   @override
   void initState() {
@@ -700,6 +722,11 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     _shakeAnimation = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 500),
+    );
+    
+    _errorAnimation = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
     );
 
     _setTimerBasedOnDifficulty();
@@ -788,6 +815,87 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     }
   }
 
+  // Check if a completed word is correct
+  void _checkCurrentWord() {
+    if (_selectedClueIndex == -1) return;
+    
+    final clue = _isAcross
+        ? _crosswordData.acrossClues[_selectedClueIndex]
+        : _crosswordData.downClues[_selectedClueIndex];
+    
+    final int row = clue.startPosition[0];
+    final int col = clue.startPosition[1];
+    bool isComplete = true;
+    bool hasError = false;
+    int errorRow = -1;
+    int errorCol = -1;
+    
+    if (_isAcross) {
+      for (int j = 0; j < clue.length; j++) {
+        if (_currentAnswers[row][col + j] == '') {
+          isComplete = false;
+          break;
+        } else if (_currentAnswers[row][col + j] != _crosswordData.grid[row][col + j]) {
+          hasError = true;
+          errorRow = row;
+          errorCol = col + j;
+        }
+      }
+    } else {
+      for (int i = 0; i < clue.length; i++) {
+        if (_currentAnswers[row + i][col] == '') {
+          isComplete = false;
+          break;
+        } else if (_currentAnswers[row + i][col] != _crosswordData.grid[row + i][col]) {
+          hasError = true;
+          errorRow = row + i;
+          errorCol = col;
+        }
+      }
+    }
+    
+    if (isComplete && hasError) {
+      _showWordError(errorRow, errorCol);
+    }
+  }
+  
+  // Show visual notification for incorrect word
+  void _showWordError(int row, int col) {
+    setState(() {
+      _hasError = true;
+      _errorRow = row;
+      _errorCol = col;
+      _audioPlayer.play(AssetSource('sounds/error.mp3'));
+      _errorAnimation.reset();
+      _errorAnimation.forward();
+    });
+    
+    // Clean up error state after animation
+    _errorTimer?.cancel();
+    _errorTimer = Timer(const Duration(milliseconds: 1000), () {
+      if (mounted) {
+        setState(() {
+          _hasError = false;
+        });
+      }
+    });
+    
+    // Show error message
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Oops! This word has an error. Check your spelling.'),
+        backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 2),
+        action: SnackBarAction(
+          label: 'OK',
+          textColor: Colors.white,
+          onPressed: () {},
+        ),
+      ),
+    );
+  }
+
   void _calculateScore() {
     // Base score depends on difficulty
     int baseScore = 0;
@@ -873,39 +981,152 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
         }
       } else {
         for (int i = 0; i < clue.length; i++) {
-          if (_currentAnswers[row + i][col] !=
-              _crosswordData.grid[row + i][col]) {
-            emptyCells.add([row + i, col]);
+          for (int i = 0; i < clue.length; i++) {
+            if (_currentAnswers[row + i][col] != _crosswordData.grid[row + i][col]) {
+              emptyCells.add([row + i, col]);
+            }
           }
         }
       }
 
-      if (emptyCells.isNotEmpty) {
-        final randomCell = emptyCells[Random().nextInt(emptyCells.length)];
-        final cellRow = randomCell[0];
-        final cellCol = randomCell[1];
-
-        _currentAnswers[cellRow][cellCol] =
-            _crosswordData.grid[cellRow][cellCol];
-        _revealed[cellRow][cellCol] = true;
-
-        _hintAnimation.reset();
-        _hintAnimation.forward();
-        _audioPlayer.play(AssetSource('sounds/hint.mp3'));
-
-        _checkCompletion();
-      } else {
-        // If there are no empty cells, refund the hint
-        _hintsRemaining++;
-        _showMessage('This word is already complete!');
+      if (emptyCells.isEmpty) {
+        _showMessage('This word is already correct!');
+        _hintsRemaining++; // Refund the hint
+        return;
       }
+
+      // Select a random empty cell and reveal it
+      final random = Random();
+      final selectedCell = emptyCells[random.nextInt(emptyCells.length)];
+      final cellRow = selectedCell[0];
+      final cellCol = selectedCell[1];
+
+      _currentAnswers[cellRow][cellCol] = _crosswordData.grid[cellRow][cellCol];
+      _revealed[cellRow][cellCol] = true;
+
+      // Animation and sound effect
+      _hintAnimation.reset();
+      _hintAnimation.forward();
+      _audioPlayer.play(AssetSource('sounds/hint.mp3'));
     });
+
+    _checkCompletion();
   }
 
   void _showMessage(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+      SnackBar(
+        content: Text(message),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
     );
+  }
+
+  void _selectCell(int row, int col) {
+    if (_crosswordData.grid[row][col] == '#') return;
+
+    setState(() {
+      _selectedRow = row;
+      _selectedCol = col;
+
+      // Find which clue this cell belongs to
+      _findSelectedClue(row, col);
+    });
+
+    _focusNode.requestFocus();
+  }
+
+  void _findSelectedClue(int row, int col) {
+    // First check if cell is part of an across clue
+    for (int i = 0; i < _crosswordData.acrossClues.length; i++) {
+      final clue = _crosswordData.acrossClues[i];
+      final startRow = clue.startPosition[0];
+      final startCol = clue.startPosition[1];
+
+      if (row == startRow && col >= startCol && col < startCol + clue.length) {
+        _selectedClueIndex = i;
+        _selectedClue = clue.clue;
+        _isAcross = true;
+        return;
+      }
+    }
+
+    // Then check down clues
+    for (int i = 0; i < _crosswordData.downClues.length; i++) {
+      final clue = _crosswordData.downClues[i];
+      final startRow = clue.startPosition[0];
+      final startCol = clue.startPosition[1];
+
+      if (col == startCol && row >= startRow && row < startRow + clue.length) {
+        _selectedClueIndex = i;
+        _selectedClue = clue.clue;
+        _isAcross = false;
+        return;
+      }
+    }
+
+    // Default case if no clue is found
+    _selectedClueIndex = -1;
+    _selectedClue = '';
+  }
+
+  void _handleKeyInput(String key) {
+    if (_selectedRow == -1 || _selectedCol == -1) return;
+    
+    // Validate input - only allow letters
+    if (!RegExp(r'^[a-zA-Z]$').hasMatch(key)) return;
+
+    setState(() {
+      // Save history for undo
+      _historyStack.add(CellHistoryEntry(
+        row: _selectedRow,
+        col: _selectedCol, 
+        prevValue: _currentAnswers[_selectedRow][_selectedCol]
+      ));
+      
+      // Update cell with uppercase letter
+      _currentAnswers[_selectedRow][_selectedCol] = key.toUpperCase();
+      
+      // Move to next cell in the direction of the selected clue
+      if (_isAcross && _selectedCol + 1 < _crosswordData.grid[0].length && 
+          _crosswordData.grid[_selectedRow][_selectedCol + 1] != '#') {
+        _selectedCol++;
+      } else if (!_isAcross && _selectedRow + 1 < _crosswordData.grid.length && 
+          _crosswordData.grid[_selectedRow + 1][_selectedCol] != '#') {
+        _selectedRow++;
+      }
+    });
+
+    _audioPlayer.play(AssetSource('sounds/type.mp3'));
+    _checkCurrentWord();
+    _checkCompletion();
+  }
+
+  void _undoLastEntry() {
+    if (_historyStack.isEmpty) {
+      _showMessage('Nothing to undo!');
+      return;
+    }
+
+    setState(() {
+      final lastEntry = _historyStack.removeLast();
+      _currentAnswers[lastEntry.row][lastEntry.col] = lastEntry.prevValue;
+      _selectedRow = lastEntry.row;
+      _selectedCol = lastEntry.col;
+      _findSelectedClue(lastEntry.row, lastEntry.col);
+    });
+    
+    _audioPlayer.play(AssetSource('sounds/undo.mp3'));
+  }
+
+  void _toggleDirection() {
+    if (_selectedRow == -1 || _selectedCol == -1) return;
+
+    setState(() {
+      _isAcross = !_isAcross;
+      _findSelectedClue(_selectedRow, _selectedCol);
+    });
   }
 
   void _showGameOverDialog(bool isWin) {
@@ -914,351 +1135,432 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       barrierDismissible: false,
       builder: (context) {
         return AlertDialog(
-          title: Text(
-            isWin ? 'Congratulations!' : 'Time\'s Up!',
-            style: TextStyle(
-              color: isWin ? Colors.green : Colors.red,
-              fontWeight: FontWeight.bold,
-            ),
-            textAlign: TextAlign.center,
+          backgroundColor: Colors.white.withOpacity(0.95),
+          title: Column(
+            children: [
+              Icon(
+                isWin ? Icons.emoji_events : Icons.timer_off, 
+                size: 60, 
+                color: isWin ? Colors.amber : Colors.red
+              ),
+              const SizedBox(height: 10),
+              Text(
+                isWin ? 'Congratulations!' : 'Time\'s Up!',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: isWin ? Colors.green : Colors.red,
+                ),
+              ),
+            ],
           ),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                isWin ? 'You completed the puzzle!' : 'You ran out of time!',
+                isWin
+                    ? 'You completed the puzzle!'
+                    : 'You ran out of time!',
+                style: const TextStyle(fontSize: 18),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 20),
-              isWin
-                  ? Text(
-                    'Your Score: $_score',
-                    style: const TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    textAlign: TextAlign.center,
-                  )
-                  : const SizedBox.shrink(),
+              if (isWin) ...[
+                Text(
+                  'Score: $_score',
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.blue,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Time Left: ${_formatTime(_timeRemaining)}',
+                  style: const TextStyle(fontSize: 16),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  'Hints Used: ${3 - _hintsRemaining}',
+                  style: const TextStyle(fontSize: 16),
+                ),
+              ],
             ],
           ),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
           actions: [
+            if (isWin)
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const LeaderboardScreen(),
+                    ),
+                  );
+                },
+                style: TextButton.styleFrom(
+                  backgroundColor: Colors.blue,
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('View Leaderboard'),
+              ),
             TextButton(
               onPressed: () {
                 Navigator.pop(context);
                 Navigator.pop(context);
               },
-              child: const Text('Back to Menu'),
-            ),
-            ElevatedButton(
-              onPressed: () {
-                Navigator.pop(context);
-                _restartGame();
-              },
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
-              child: const Text(
-                'Play Again',
-                style: TextStyle(color: Colors.white),
+              style: TextButton.styleFrom(
+                backgroundColor: Colors.green,
+                foregroundColor: Colors.white,
               ),
+              child: const Text('Main Menu'),
             ),
           ],
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
         );
       },
     );
   }
 
-  void _restartGame() {
-    setState(() {
-      _loadCrossword();
-      _setTimerBasedOnDifficulty();
-      _startTimer();
-      _hintsRemaining = 3;
-      _score = 0;
-      _selectedClue = '';
-      _selectedClueIndex = -1;
-    });
-  }
-
-  void _selectClue(int clueIndex, bool isAcross) {
-    setState(() {
-      _selectedClueIndex = clueIndex;
-      _isAcross = isAcross;
-
-      final clue =
-          isAcross
-              ? _crosswordData.acrossClues[clueIndex]
-              : _crosswordData.downClues[clueIndex];
-
-      _selectedClue = '${clue.number}. ${clue.clue}';
-    });
-  }
-
-  void _onCellTap(int row, int col) {
-    // Find which clue this cell belongs to
-    for (int i = 0; i < _crosswordData.acrossClues.length; i++) {
-      final clue = _crosswordData.acrossClues[i];
-      final startRow = clue.startPosition[0];
-      final startCol = clue.startPosition[1];
-
-      if (row == startRow && col >= startCol && col < startCol + clue.length) {
-        _selectClue(i, true);
-        return;
-      }
-    }
-
-    for (int i = 0; i < _crosswordData.downClues.length; i++) {
-      final clue = _crosswordData.downClues[i];
-      final startRow = clue.startPosition[0];
-      final startCol = clue.startPosition[1];
-
-      if (col == startCol && row >= startRow && row < startRow + clue.length) {
-        _selectClue(i, false);
-        return;
-      }
-    }
-  }
-
-  void _onKeyPressed(String key, int row, int col) {
-    if (key.length != 1 || !RegExp(r'[a-zA-Z]').hasMatch(key)) {
-      return;
-    }
-
-    setState(() {
-      _currentAnswers[row][col] = key.toUpperCase();
-
-      // Move to next cell based on direction
-      if (_isAcross) {
-        // Find next cell in the row
-        int nextCol = col + 1;
-        if (nextCol < _crosswordData.grid[0].length &&
-            _crosswordData.grid[row][nextCol] != '#') {
-          // Focus next cell
-        }
-      } else {
-        // Find next cell in the column
-        int nextRow = row + 1;
-        if (nextRow < _crosswordData.grid.length &&
-            _crosswordData.grid[nextRow][col] != '#') {
-          // Focus next cell
-        }
-      }
-
-      _checkCompletion();
-    });
-  }
-
   @override
   void dispose() {
     _timer.cancel();
+    _errorTimer?.cancel();
     _focusNode.dispose();
     _textController.dispose();
     _confettiController.dispose();
     _audioPlayer.dispose();
     _hintAnimation.dispose();
     _shakeAnimation.dispose();
+    _errorAnimation.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          '${widget.difficulty.toUpperCase()} CROSSWORD',
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        actions: [
-          Padding(
-            padding: const EdgeInsets.all(8.0),
-            child: Container(
-              decoration: BoxDecoration(
-                color: _timeRemaining < 30 ? Colors.red : Colors.green,
-                borderRadius: BorderRadius.circular(15),
+      body: SafeArea(
+        child: Stack(
+          children: [
+            // Background gradient
+            Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Colors.lightBlue, Colors.white],
+                ),
               ),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              child: Row(
-                children: [
-                  const Icon(Icons.timer, color: Colors.white),
-                  const SizedBox(width: 5),
-                  Text(
-                    _formatTime(_timeRemaining),
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                    ),
-                  ),
+            ),
+            
+            // Confetti overlay for winning celebration
+            Align(
+              alignment: Alignment.topCenter,
+              child: ConfettiWidget(
+                confettiController: _confettiController,
+                blastDirectionality: BlastDirectionality.explosive,
+                particleDrag: 0.05,
+                emissionFrequency: 0.05,
+                numberOfParticles: 20,
+                gravity: 0.1,
+                colors: const [
+                  Colors.red,
+                  Colors.blue,
+                  Colors.green,
+                  Colors.yellow,
+                  Colors.purple,
+                  Colors.orange,
                 ],
               ),
             ),
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Colors.blue.shade50, Colors.white],
-              ),
-            ),
-            child: SafeArea(
-              child: Column(
-                children: [
-                  const SizedBox(height: 10),
-                  // Clue display
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    margin: const EdgeInsets.symmetric(horizontal: 10),
-                    decoration: BoxDecoration(
-                      color: Colors.yellow.shade100,
-                      border: Border.all(color: Colors.amber),
-                      borderRadius: BorderRadius.circular(10),
+            
+            // Main content
+            Column(
+              children: [
+                // App bar with game info
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.8),
+                    borderRadius: const BorderRadius.only(
+                      bottomLeft: Radius.circular(15),
+                      bottomRight: Radius.circular(15),
                     ),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.lightbulb_outline,
-                          color: Colors.amber,
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            _selectedClue.isEmpty
-                                ? 'Select a cell to see clue'
-                                : _selectedClue,
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                        ),
-                      ],
-                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.1),
+                        blurRadius: 8,
+                        offset: const Offset(0, 3),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 20),
-                  // Crossword grid
-                  Expanded(
-                    child: Center(
-                      child: AspectRatio(
-                        aspectRatio: 1.0,
-                        child: Container(
-                          margin: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            border: Border.all(color: Colors.black, width: 2),
-                            borderRadius: BorderRadius.circular(5),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      // Back button
+                      IconButton(
+                        icon: const Icon(Icons.arrow_back),
+                        onPressed: () {
+                          showDialog(
+                            context: context,
+                            builder: (context) => AlertDialog(
+                              title: const Text('Are you sure?'),
+                              content: const Text('Your progress will be lost.'),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(context),
+                                  child: const Text('Stay'),
+                                ),
+                                TextButton(
+                                  onPressed: () {
+                                    Navigator.pop(context);
+                                    Navigator.pop(context);
+                                  },
+                                  child: const Text('Leave'),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                      
+                      // Timer and Difficulty
+                      Column(
+                        children: [
+                          Text(
+                            widget.difficulty.toUpperCase(),
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                              color: widget.difficulty == 'easy'
+                                  ? Colors.green
+                                  : widget.difficulty == 'medium'
+                                      ? Colors.orange
+                                      : Colors.red,
+                            ),
                           ),
+                          Row(
+                            children: [
+                              const Icon(Icons.timer, color: Colors.blue),
+                              const SizedBox(width: 5),
+                              Text(
+                                _formatTime(_timeRemaining),
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 18,
+                                  color: _timeRemaining < 60
+                                      ? Colors.red
+                                      : Colors.black,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                      
+                      // Hints indicator
+                      Row(
+                        children: [
+                          const Icon(Icons.lightbulb, color: Colors.amber),
+                          const SizedBox(width: 5),
+                          Text(
+                            '$_hintsRemaining',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 18,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                
+                // Clue display
+                Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.all(10),
+                  padding: const EdgeInsets.all(15),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.8),
+                    borderRadius: BorderRadius.circular(15),
+                    border: _selectedClue.isNotEmpty
+                        ? Border.all(color: Colors.blue, width: 2)
+                        : null,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _selectedClue.isNotEmpty
+                            ? '${_isAcross ? "Across" : "Down"}: $_selectedClue'
+                            : 'Select a cell to see the clue',
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      if (_selectedClue.isNotEmpty)
+                        const SizedBox(height: 5),
+                      if (_selectedClue.isNotEmpty)
+                        Text(
+                          'Tap the clue to change direction',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                
+                // Crossword grid - using Expanded to fill available space
+                Expanded(
+                  child: KeyboardListener(
+                    focusNode: _focusNode,
+                    onKeyEvent: (event) {
+                      if (event is KeyDownEvent) {
+                        if (event.logicalKey == LogicalKeyboardKey.backspace) {
+                          _undoLastEntry();
+                        } else if (event.logicalKey == LogicalKeyboardKey.space) {
+                          _toggleDirection();
+                        } else if (event.character != null && 
+                            event.character!.isNotEmpty) {
+                          _handleKeyInput(event.character!);
+                        }
+                      }
+                    },
+                    child: GestureDetector(
+                      onTap: () => _focusNode.requestFocus(),
+                      child: Container(
+                        margin: const EdgeInsets.all(10),
+                        padding: const EdgeInsets.all(2),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(15),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.2),
+                              blurRadius: 10,
+                              spreadRadius: 1,
+                              offset: const Offset(0, 5),
+                            ),
+                          ],
+                        ),
+                        child: AspectRatio(
+                          aspectRatio: 1.0,
                           child: GridView.builder(
                             physics: const NeverScrollableScrollPhysics(),
-                            itemCount:
-                                _crosswordData.grid.length *
-                                _crosswordData.grid[0].length,
-                            gridDelegate:
-                                SliverGridDelegateWithFixedCrossAxisCount(
-                                  crossAxisCount: _crosswordData.grid[0].length,
-                                ),
+                            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: _crosswordData.grid[0].length,
+                            ),
+                            itemCount: _crosswordData.grid.length * _crosswordData.grid[0].length,
                             itemBuilder: (context, index) {
-                              final row =
-                                  index ~/ _crosswordData.grid[0].length;
+                              final row = index ~/ _crosswordData.grid[0].length;
                               final col = index % _crosswordData.grid[0].length;
-
+                              
+                              // If this is a black cell in the grid
                               if (_crosswordData.grid[row][col] == '#') {
-                                return Container(color: Colors.black);
+                                return Container(
+                                  decoration: BoxDecoration(
+                                    color: Colors.black,
+                                    border: Border.all(color: Colors.grey, width: 0.5),
+                                  ),
+                                );
                               }
-
-                              // Check if this is the start of any clue
-                              String cellNumber = '';
-                              for (var clue in _crosswordData.acrossClues) {
-                                if (clue.startPosition[0] == row &&
-                                    clue.startPosition[1] == col) {
-                                  cellNumber = clue.number.toString();
+                              
+                              // Check if this cell has a clue number
+                              String? clueNumber;
+                              for (final clue in _crosswordData.acrossClues) {
+                                if (clue.startPosition[0] == row && clue.startPosition[1] == col) {
+                                  clueNumber = clue.number.toString();
                                   break;
                                 }
                               }
-
-                              if (cellNumber.isEmpty) {
-                                for (var clue in _crosswordData.downClues) {
-                                  if (clue.startPosition[0] == row &&
-                                      clue.startPosition[1] == col) {
-                                    cellNumber = clue.number.toString();
+                              
+                              if (clueNumber == null) {
+                                for (final clue in _crosswordData.downClues) {
+                                  if (clue.startPosition[0] == row && clue.startPosition[1] == col) {
+                                    clueNumber = clue.number.toString();
                                     break;
                                   }
                                 }
                               }
-
-                              bool isSelected = false;
-                              if (_selectedClueIndex != -1) {
-                                final clue =
-                                    _isAcross
-                                        ? _crosswordData
-                                            .acrossClues[_selectedClueIndex]
-                                        : _crosswordData
-                                            .downClues[_selectedClueIndex];
-
-                                final startRow = clue.startPosition[0];
-                                final startCol = clue.startPosition[1];
-
-                                if (_isAcross) {
-                                  isSelected =
-                                      row == startRow &&
-                                      col >= startCol &&
-                                      col < startCol + clue.length;
-                                } else {
-                                  isSelected =
-                                      col == startCol &&
-                                      row >= startRow &&
-                                      row < startRow + clue.length;
-                                }
-                              }
-
-                              return GestureDetector(
-                                onTap: () => _onCellTap(row, col),
-                                child: AnimatedContainer(
-                                  duration: const Duration(milliseconds: 200),
-                                  decoration: BoxDecoration(
-                                    color:
-                                        isSelected
-                                            ? Colors.lightBlue.shade100
-                                            : _revealed[row][col]
-                                            ? Colors.yellow.shade50
-                                            : Colors.white,
-                                    border: Border.all(
-                                      color:
-                                          isSelected
-                                              ? Colors.blue
-                                              : Colors.grey,
-                                      width: isSelected ? 2 : 1,
+                              
+                              // Error animation
+                              final isError = _hasError && _errorRow == row && _errorCol == col;
+                              
+                              // Actual cell with letter
+                              return AnimatedBuilder(
+                                animation: isError ? _errorAnimation : _hintAnimation,
+                                builder: (context, child) {
+                                  return Transform.scale(
+                                    scale: _revealed[row][col] && _hintAnimation.status == AnimationStatus.forward
+                                        ? 1.0 + _hintAnimation.value * 0.2
+                                        : 1.0,
+                                    child: Transform.translate(
+                                      offset: isError
+                                          ? Offset(sin(_errorAnimation.value * 4 * pi) * 5, 0)
+                                          : Offset.zero,
+                                      child: child,
                                     ),
-                                  ),
-                                  child: Stack(
-                                    children: [
-                                      if (cellNumber.isNotEmpty)
-                                        Positioned(
-                                          top: 2,
-                                          left: 2,
+                                  );
+                                },
+                                child: GestureDetector(
+                                  onTap: () => _selectCell(row, col),
+                                  child: Container(
+                                    decoration: BoxDecoration(
+                                      color: _selectedRow == row && _selectedCol == col
+                                          ? Colors.lightBlue.withOpacity(0.6)
+                                          : _isAcross && _selectedRow == row && _selectedClueIndex != -1
+                                              ? Colors.lightBlue.withOpacity(0.2)
+                                              : !_isAcross && _selectedCol == col && _selectedClueIndex != -1
+                                                  ? Colors.lightBlue.withOpacity(0.2)
+                                                  : Colors.white,
+                                      border: Border.all(
+                                        color: _revealed[row][col]
+                                            ? Colors.green
+                                            : isError
+                                                ? Colors.red
+                                                : Colors.grey,
+                                        width: _revealed[row][col] || isError ? 2 : 0.5,
+                                      ),
+                                    ),
+                                    child: Stack(
+                                      children: [
+                                        // Clue number
+                                        if (clueNumber != null)
+                                          Positioned(
+                                            top: 1,
+                                            left: 1,
+                                            child: Text(
+                                              clueNumber,
+                                              style: TextStyle(
+                                                fontSize: 8,
+                                                fontWeight: FontWeight.bold,
+                                                color: Colors.grey[700],
+                                              ),
+                                            ),
+                                          ),
+                                        
+                                        // Letter
+                                        Center(
                                           child: Text(
-                                            cellNumber,
-                                            style: const TextStyle(
-                                              fontSize: 8,
+                                            _currentAnswers[row][col],
+                                            style: TextStyle(
+                                              fontSize: 20,
                                               fontWeight: FontWeight.bold,
+                                              color: _revealed[row][col]
+                                                  ? Colors.green
+                                                  : Colors.black,
                                             ),
                                           ),
                                         ),
-                                      Center(
-                                        child: Text(
-                                          _currentAnswers[row][col],
-                                          style: TextStyle(
-                                            fontSize: 20,
-                                            fontWeight: FontWeight.bold,
-                                            color:
-                                                _revealed[row][col]
-                                                    ? Colors.blue
-                                                    : Colors.black,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
+                                      ],
+                                    ),
                                   ),
                                 ),
                               );
@@ -1268,402 +1570,138 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                       ),
                     ),
                   ),
-                  // Virtual keyboard
-                  Container(
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    color: Colors.grey.shade200,
-                    child: Column(
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children:
-                              'QWERTYUIOP'.split('').map((letter) {
-                                return _buildKeyboardKey(letter);
-                              }).toList(),
+                ),
+                
+                // Controls at the bottom
+                Container(
+                  color: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 20),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      // Undo button
+                      ElevatedButton.icon(
+                        onPressed: _undoLastEntry,
+                        icon: const Icon(Icons.undo),
+                        label: const Text('Undo'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blueGrey,
+                          foregroundColor: Colors.white,
                         ),
-                        const SizedBox(height: 5),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children:
-                              'ASDFGHJKL'.split('').map((letter) {
-                                return _buildKeyboardKey(letter);
-                              }).toList(),
-                        ),
-                        const SizedBox(height: 5),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children:
-                              'ZXCVBNM'.split('').map((letter) {
-                                return _buildKeyboardKey(letter);
-                              }).toList(),
-                        ),
-                        const SizedBox(height: 10),
-                        // Game controls
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                          children: [
-                            AnimatedBuilder(
-                              animation: _hintAnimation,
-                              builder: (context, child) {
-                                return Transform.scale(
-                                  scale:
-                                      Tween<double>(begin: 1.0, end: 1.2)
-                                          .animate(
-                                            CurvedAnimation(
-                                              parent: _hintAnimation,
-                                              curve: Curves.elasticInOut,
-                                            ),
-                                          )
-                                          .value,
-                                  child: child,
-                                );
-                              },
-                              child: ElevatedButton.icon(
-                                onPressed: _useHint,
-                                icon: const Icon(Icons.lightbulb),
-                                label: Text('Hint ($_hintsRemaining)'),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor:
-                                      _hintsRemaining > 0
-                                          ? Colors.amber
-                                          : Colors.grey,
-                                ),
-                              ),
-                            ),
-                            ElevatedButton.icon(
-                              onPressed: () {
-                                showDialog(
-                                  context: context,
-                                  builder:
-                                      (context) => AlertDialog(
-                                        title: const Text('Confirm'),
-                                        content: const Text(
-                                          'Are you sure you want to quit?',
-                                        ),
-                                        actions: [
-                                          TextButton(
-                                            onPressed:
-                                                () => Navigator.pop(context),
-                                            child: const Text('Cancel'),
-                                          ),
-                                          ElevatedButton(
-                                            onPressed: () {
-                                              Navigator.pop(context);
-                                              Navigator.pop(context);
-                                            },
-                                            style: ElevatedButton.styleFrom(
-                                              backgroundColor: Colors.red,
-                                            ),
-                                            child: const Text(
-                                              'Quit',
-                                              style: TextStyle(
-                                                color: Colors.white,
-                                              ),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                );
-                              },
-                              icon: const Icon(Icons.exit_to_app),
-                              label: const Text('Quit'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.red,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-          // Confetti effect for winning
-          Align(
-            alignment: Alignment.topCenter,
-            child: ConfettiWidget(
-              confettiController: _confettiController,
-              blastDirection: pi / 2,
-              maxBlastForce: 5,
-              minBlastForce: 1,
-              emissionFrequency: 0.05,
-              numberOfParticles: 20,
-              gravity: 0.1,
-              colors: const [
-                Colors.green,
-                Colors.blue,
-                Colors.pink,
-                Colors.orange,
-                Colors.purple,
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildKeyboardKey(String letter) {
-    return Padding(
-      padding: const EdgeInsets.all(2),
-      child: ElevatedButton(
-        onPressed: () {
-          if (_selectedClueIndex != -1) {
-            final clue =
-                _isAcross
-                    ? _crosswordData.acrossClues[_selectedClueIndex]
-                    : _crosswordData.downClues[_selectedClueIndex];
-
-            final startRow = clue.startPosition[0];
-            final startCol = clue.startPosition[1];
-
-            for (int i = 0; i < clue.length; i++) {
-              final row = _isAcross ? startRow : startRow + i;
-              final col = _isAcross ? startCol + i : startCol;
-
-              if (_currentAnswers[row][col].isEmpty) {
-                _onKeyPressed(letter, row, col);
-                break;
-              }
-            }
-          }
-        },
-        style: ElevatedButton.styleFrom(
-          padding: const EdgeInsets.all(8),
-          minimumSize: const Size(35, 35),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
-        ),
-        child: Text(
-          letter,
-          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-        ),
-      ),
-    );
-  }
-}
-
-class LeaderboardScreen extends StatefulWidget {
-  const LeaderboardScreen({Key? key}) : super(key: key);
-
-  @override
-  State<LeaderboardScreen> createState() => _LeaderboardScreenState();
-}
-
-class _LeaderboardScreenState extends State<LeaderboardScreen>
-    with SingleTickerProviderStateMixin {
-  List<ScoreEntry> _scores = [];
-  String _filter = 'all';
-  late AnimationController _controller;
-  late Animation<double> _animation;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadScores();
-
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 1000),
-      vsync: this,
-    );
-
-    _animation = CurvedAnimation(parent: _controller, curve: Curves.elasticOut);
-
-    _controller.forward();
-  }
-
-  Future<void> _loadScores() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final List<String> scoreStrings = prefs.getStringList('scores') ?? [];
-
-      _scores =
-          scoreStrings.map((s) {
-            final parts = s.split(':');
-            return ScoreEntry(difficulty: parts[0], score: int.parse(parts[1]));
-          }).toList();
-
-      setState(() {});
-    } catch (e) {
-      // Handle error
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // Filter scores based on selected filter
-    List<ScoreEntry> filteredScores =
-        _filter == 'all'
-            ? _scores
-            : _scores.where((s) => s.difficulty == _filter).toList();
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          'Leaderboard',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-      ),
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Colors.blue.shade100, Colors.white],
-          ),
-        ),
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  _buildFilterChip('All', 'all'),
-                  const SizedBox(width: 10),
-                  _buildFilterChip('Easy', 'easy'),
-                  const SizedBox(width: 10),
-                  _buildFilterChip('Medium', 'medium'),
-                  const SizedBox(width: 10),
-                  _buildFilterChip('Hard', 'hard'),
-                ],
-              ),
-            ),
-            Expanded(
-              child:
-                  filteredScores.isEmpty
-                      ? const Center(
-                        child: Text(
-                          'No scores yet. Play a game!',
-                          style: TextStyle(fontSize: 18),
-                        ),
-                      )
-                      : ListView.builder(
-                        itemCount: filteredScores.length,
-                        itemBuilder: (context, index) {
-                          final score = filteredScores[index];
-                          return FadeTransition(
-                            opacity: _animation,
-                            child: SlideTransition(
-                              position: Tween<Offset>(
-                                begin: Offset(0, 0.1 * index),
-                                end: Offset.zero,
-                              ).animate(_animation),
-                              child: Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                  vertical: 8,
-                                ),
-                                child: Card(
-                                  elevation: 4,
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(15),
-                                  ),
-                                  child: ListTile(
-                                    leading: CircleAvatar(
-                                      backgroundColor:
-                                          index == 0
-                                              ? Colors.amber
-                                              : index == 1
-                                              ? Colors.grey.shade300
-                                              : index == 2
-                                              ? Colors.brown.shade300
-                                              : Colors.blue.shade100,
-                                      child: Text(
-                                        '${index + 1}',
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          color:
-                                              index < 3
-                                                  ? Colors.white
-                                                  : Colors.black,
-                                        ),
-                                      ),
-                                    ),
-                                    title: Text(
-                                      'Score: ${score.score}',
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 18,
-                                      ),
-                                    ),
-                                    subtitle: Text(
-                                      'Difficulty: ${score.difficulty[0].toUpperCase()}${score.difficulty.substring(1)}',
-                                    ),
-                                    trailing: Icon(
-                                      score.difficulty == 'easy'
-                                          ? Icons.sentiment_satisfied
-                                          : score.difficulty == 'medium'
-                                          ? Icons.sentiment_neutral
-                                          : Icons.sentiment_very_dissatisfied,
-                                      color:
-                                          score.difficulty == 'easy'
-                                              ? Colors.green
-                                              : score.difficulty == 'medium'
-                                              ? Colors.orange
-                                              : Colors.red,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                          );
-                        },
                       ),
+                      
+                      // Direction toggle
+                      ElevatedButton.icon(
+                        onPressed: _toggleDirection,
+                        icon: Icon(_isAcross ? Icons.arrow_right_alt : Icons.arrow_downward),
+                        label: Text(_isAcross ? 'Across' : 'Down'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue,
+                          foregroundColor: Colors.white,
+                        ),
+                      ),
+                      
+                      // Hint button
+                      ElevatedButton.icon(
+                        onPressed: _hintsRemaining > 0 ? _useHint : null,
+                        icon: const Icon(Icons.lightbulb),
+                        label: const Text('Hint'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.amber,
+                          foregroundColor: Colors.white,
+                          disabledBackgroundColor: Colors.grey,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                
+                // Simple keyboard for input
+                Container(
+                  color: Colors.grey[200],
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  child: Column(
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: 'QWERTYUIOP'.split('').map((letter) {
+                          return _buildKeyboardKey(letter);
+                        }).toList(),
+                      ),
+                      const SizedBox(height: 5),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: 'ASDFGHJKL'.split('').map((letter) {
+                          return _buildKeyboardKey(letter);
+                        }).toList(),
+                      ),
+                      const SizedBox(height: 5),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: 'ZXCVBNM'.split('').map((letter) {
+                          return _buildKeyboardKey(letter);
+                        }).toList(),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ],
         ),
       ),
     );
   }
-
-  Widget _buildFilterChip(String label, String value) {
-    return FilterChip(
-      label: Text(label),
-      selected: _filter == value,
-      onSelected: (selected) {
-        setState(() {
-          _filter = value;
-        });
-      },
-      backgroundColor: Colors.white,
-      selectedColor: Colors.blue.shade200,
-      checkmarkColor: Colors.white,
-      labelStyle: TextStyle(
-        color: _filter == value ? Colors.white : Colors.black,
-        fontWeight: _filter == value ? FontWeight.bold : FontWeight.normal,
+  
+  Widget _buildKeyboardKey(String letter) {
+    return Padding(
+      padding: const EdgeInsets.all(2),
+      child: Material(
+        elevation: 2,
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          onTap: () => _handleKeyInput(letter),
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            width: 30,
+            height: 40,
+            alignment: Alignment.center,
+            child: Text(
+              letter,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
 }
 
-// Models
-class CrosswordData {
-  final List<List<String>> grid;
-  final List<ClueData> acrossClues;
-  final List<ClueData> downClues;
-
-  CrosswordData({
-    required this.grid,
-    required this.acrossClues,
-    required this.downClues,
+// Model class for tracking cell history
+class CellHistoryEntry {
+  final int row;
+  final int col;
+  final String prevValue;
+  
+  CellHistoryEntry({
+    required this.row,
+    required this.col,
+    required this.prevValue,
   });
 }
 
-class ClueData {
+// Model classes
+class CrosswordClue {
   final int number;
   final String clue;
-  final List<int> startPosition; // [row, col]
+  final List<int> startPosition;
   final int length;
 
-  ClueData({
+  const CrosswordClue({
     required this.number,
     required this.clue,
     required this.startPosition,
@@ -1671,174 +1709,1009 @@ class ClueData {
   });
 }
 
-class ScoreEntry {
-  final String difficulty;
-  final int score;
+class CrosswordData {
+  final List<List<String>> grid;
+  final List<CrosswordClue> acrossClues;
+  final List<CrosswordClue> downClues;
 
-  ScoreEntry({required this.difficulty, required this.score});
+  const CrosswordData({
+    required this.grid,
+    required this.acrossClues,
+    required this.downClues,
+  });
 }
 
-// Sample puzzle data
+// Sample crossword puzzles
 final easyPuzzle = CrosswordData(
   grid: [
     ['C', 'A', 'T', '#', 'D'],
-    ['O', '#', 'O', '#', 'O'],
-    ['W', 'I', 'N', 'D', 'G'],
+    ['#', '#', 'O', '#', 'O'],
+    ['D', 'O', 'G', '#', 'G'],
     ['#', '#', '#', '#', '#'],
     ['S', 'U', 'N', '#', '#'],
   ],
   acrossClues: [
-    ClueData(number: 1, clue: 'Feline pet', startPosition: [0, 0], length: 3),
-    ClueData(
-      number: 5,
-      clue: 'House pet that barks',
-      startPosition: [0, 4],
-      length: 1,
+    const CrosswordClue(
+      number: 1,
+      clue: 'A furry pet that says "meow"',
+      startPosition: [0, 0],
+      length: 3,
     ),
-    ClueData(number: 6, clue: 'Moving air', startPosition: [2, 0], length: 4),
-    ClueData(
-      number: 8,
-      clue: 'It shines during the day',
+    const CrosswordClue(
+      number: 4,
+      clue: 'A furry pet that says "woof"',
+      startPosition: [2, 0],
+      length: 3,
+    ),
+    const CrosswordClue(
+      number: 5,
+      clue: 'It shines in the sky during day',
       startPosition: [4, 0],
       length: 3,
     ),
   ],
   downClues: [
-    ClueData(
+    const CrosswordClue(
       number: 1,
-      clue: 'Animal that gives milk',
+      clue: 'It says "cock-a-doodle-doo"',
       startPosition: [0, 0],
       length: 3,
     ),
-    ClueData(number: 2, clue: 'Not no', startPosition: [0, 1], length: 1),
-    ClueData(
-      number: 3,
-      clue: 'Toy to play with',
+    const CrosswordClue(
+      number: 2,
+      clue: 'It says "tweet tweet"',
       startPosition: [0, 2],
       length: 3,
     ),
-    ClueData(number: 4, clue: 'Woof animal', startPosition: [0, 4], length: 3),
+    const CrosswordClue(
+      number: 3,
+      clue: 'A pet that likes to chase mice',
+      startPosition: [0, 4],
+      length: 3,
+    ),
   ],
 );
 
 final mediumPuzzle = CrosswordData(
   grid: [
-    ['F', 'R', 'O', 'G', '#'],
-    ['L', '#', 'R', '#', 'T'],
-    ['O', 'C', 'A', 'T', 'I'],
-    ['W', '#', 'N', '#', 'G'],
-    ['#', 'B', 'G', 'E', 'R'],
+    ['S', 'T', 'A', 'R', '#', 'M'],
+    ['K', '#', 'P', '#', 'B', 'O'],
+    ['Y', 'E', 'P', 'L', 'E', 'O'],
+    ['#', 'A', 'L', '#', 'A', 'N'],
+    ['C', 'R', 'E', 'D', '#', '#'],
   ],
   acrossClues: [
-    ClueData(
+    const CrosswordClue(
       number: 1,
-      clue: 'Green amphibian that hops',
+      clue: 'Twinkle twinkle little...',
       startPosition: [0, 0],
       length: 4,
     ),
-    ClueData(
+    const CrosswordClue(
       number: 5,
-      clue: 'Feline animal',
-      startPosition: [2, 1],
-      length: 3,
+      clue: 'The planet we live on',
+      startPosition: [2, 0],
+      length: 5,
     ),
-    ClueData(
+    const CrosswordClue(
       number: 7,
-      clue: 'Buzzing insect that makes honey',
-      startPosition: [4, 1],
+      clue: 'The color of the sky',
+      startPosition: [4, 0],
       length: 4,
     ),
   ],
   downClues: [
-    ClueData(
+    const CrosswordClue(
       number: 1,
-      clue: 'A beautiful plant that grows in gardens',
+      clue: 'The big yellow star in our sky',
       startPosition: [0, 0],
+      length: 3,
+    ),
+    const CrosswordClue(
+      number: 2,
+      clue: 'When it\'s dark and you sleep',
+      startPosition: [0, 1],
+      length: 5,
+    ),
+    const CrosswordClue(
+      number: 3,
+      clue: 'Something that falls from clouds',
+      startPosition: [0, 2],
       length: 4,
     ),
-    ClueData(number: 2, clue: 'Red fruit', startPosition: [0, 1], length: 1),
-    ClueData(
-      number: 3,
-      clue: 'Color of the sky',
-      startPosition: [0, 2],
-      length: 5,
-    ),
-    ClueData(
+    const CrosswordClue(
       number: 4,
-      clue: 'Wild striped cat',
-      startPosition: [0, 3],
-      length: 5,
-    ),
-    ClueData(
-      number: 6,
-      clue: 'Used to write on paper',
-      startPosition: [2, 4],
+      clue: 'A flying mammal',
+      startPosition: [0, 4],
       length: 3,
+    ),
+    const CrosswordClue(
+      number: 6,
+      clue: 'Opposite of yes',
+      startPosition: [0, 5],
+      length: 2,
     ),
   ],
 );
 
 final hardPuzzle = CrosswordData(
   grid: [
-    ['P', 'L', 'A', 'N', 'E', 'T'],
-    ['#', 'I', '#', '#', 'A', '#'],
-    ['M', 'G', 'H', 'T', 'R', 'T'],
-    ['O', 'H', '#', 'R', 'T', 'H'],
-    ['O', 'T', '#', 'A', 'H', '#'],
-    ['N', '#', 'S', 'I', '#', '#'],
+    ['D', 'I', 'N', 'O', 'S', 'A', 'U', 'R'],
+    ['#', '#', '#', 'C', '#', '#', '#', 'A'],
+    ['P', 'L', 'A', 'E', 'A', 'N', '#', 'I'],
+    ['L', '#', '#', 'A', '#', 'E', '#', 'N'],
+    ['A', 'R', 'C', 'N', '#', 'P', '#', 'B'],
+    ['N', '#', '#', '#', '#', 'T', '#', 'O'],
+    ['E', 'L', 'E', 'P', 'H', 'U', 'N', 'W'],
+    ['T', '#', '#', '#', '#', 'N', '#', '#'],
   ],
   acrossClues: [
-    ClueData(
+    const CrosswordClue(
       number: 1,
-      clue: 'Earth is this type of object in space',
+      clue: 'Giant extinct reptile',
       startPosition: [0, 0],
-      length: 6,
+      length: 8,
     ),
-    ClueData(
-      number: 5,
-      clue: 'Night and day, sun and stars',
+    const CrosswordClue(
+      number: 3,
+      clue: 'The Earth is this',
       startPosition: [2, 0],
       length: 6,
     ),
-    ClueData(
-      number: 8,
-      clue: 'Natural satellite of Earth',
-      startPosition: [3, 0],
-      length: 6,
-    ),
-    ClueData(
-      number: 9,
-      clue: 'Star that gives us light during day',
-      startPosition: [5, 2],
-      length: 3,
+    const CrosswordClue(
+      number: 6,
+      clue: 'Big gray animal with trunk',
+      startPosition: [6, 0],
+      length: 8,
     ),
   ],
   downClues: [
-    ClueData(
+    const CrosswordClue(
       number: 1,
-      clue: 'Controls ocean tides',
+      clue: 'Where plants and animals live',
       startPosition: [0, 0],
-      length: 5,
-    ),
-    ClueData(
-      number: 2,
-      clue: 'Glowing space bodies',
-      startPosition: [0, 1],
-      length: 5,
-    ),
-    ClueData(number: 3, clue: 'Our planet', startPosition: [0, 3], length: 5),
-    ClueData(
-      number: 4,
-      clue: 'Planet closest to the sun',
-      startPosition: [0, 4],
-      length: 5,
-    ),
-    ClueData(number: 6, clue: 'Red planet', startPosition: [0, 5], length: 4),
-    ClueData(
-      number: 7,
-      clue: 'Gas giant with rings',
-      startPosition: [3, 2],
       length: 6,
+    ),
+    const CrosswordClue(
+      number: 2,
+      clue: 'The ____ of the jungle (lion)',
+      startPosition: [0, 3],
+      length: 4,
+    ),
+    const CrosswordClue(
+      number: 4,
+      clue: 'Humans, gorillas, and chimps',
+      startPosition: [0, 5],
+      length: 7,
+    ),
+    const CrosswordClue(
+      number: 5,
+      clue: 'Colors in the sky after rain',
+      startPosition: [0, 7],
+      length: 7,
     ),
   ],
 );
+
+class LeaderboardScreen extends StatelessWidget {
+  const LeaderboardScreen({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+     return Scaffold (
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.purple, Colors.blue],
+          ),
+        ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              // App bar with back button
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Row(
+                  children: [
+                    IconButton(
+                      onPressed: () => Navigator.pop(context),
+                      icon: const Icon(Icons.arrow_back, color: Colors.white),
+                    ),
+                    const Expanded(
+                      child: Text(
+                        'Leaderboard',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 48), // Balance the back button
+                  ],
+                ),
+              ),
+              
+              // Trophy icon
+              const Icon(
+                Icons.emoji_events,
+                size: 80,
+                color: Colors.amber,
+              ),
+              const SizedBox(height: 10),
+              const Text(
+                'Top Scores',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(height: 20),
+              
+              // Leaderboard content
+              Expanded(
+                child: FutureBuilder<SharedPreferences>(
+                  future: SharedPreferences.getInstance(),
+                  builder: (context, snapshot) {
+                    if (!snapshot.hasData) {
+                      return const Center(
+                        child: CircularProgressIndicator(color: Colors.white),
+                      );
+                    }
+                    
+                    final List<String> scores = 
+                        snapshot.data!.getStringList('scores') ?? [];
+                    
+                    if (scores.isEmpty) {
+                      return Center(
+                        child: Container(
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.9),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.sentiment_dissatisfied,
+                                size: 60,
+                                color: Colors.grey,
+                              ),
+                              const SizedBox(height: 10),
+                              const Text(
+                                'No scores yet!',
+                                style: TextStyle(
+                                  fontSize: 20,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 10),
+                              const Text(
+                                'Complete a puzzle to see your scores here.',
+                                textAlign: TextAlign.center,
+                              ),
+                              const SizedBox(height: 20),
+                              ElevatedButton.icon(
+                                onPressed: () => Navigator.pop(context),
+                                icon: const Icon(Icons.play_circle),
+                                label: const Text('Play Now'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.green,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 20,
+                                    vertical: 10,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }
+                    
+                    return Container(
+                      margin: const EdgeInsets.symmetric(horizontal: 16),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.9),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: ListView.separated(
+                        padding: const EdgeInsets.all(10),
+                        itemCount: scores.length,
+                        separatorBuilder: (context, index) => Divider(
+                          color: Colors.grey.withOpacity(0.3),
+                          height: 1,
+                        ),
+                        itemBuilder: (context, index) {
+                          final parts = scores[index].split(':');
+                          final difficulty = parts[0];
+                          final score = int.parse(parts[1]);
+                          
+                          return ListTile(
+                            leading: Container(
+                              width: 40,
+                              height: 40,
+                              decoration: BoxDecoration(
+                                color: index == 0
+                                    ? Colors.amber
+                                    : index == 1
+                                        ? Colors.grey[400]
+                                        : index == 2
+                                            ? Colors.brown[300]
+                                            : Colors.blue[100],
+                                shape: BoxShape.circle,
+                              ),
+                              child: Center(
+                                child: Text(
+                                  '${index + 1}',
+                                  style: TextStyle(
+                                    color: index < 3 ? Colors.white : Colors.black,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            title: Text(
+                              'Score: $score',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 18,
+                              ),
+                            ),
+                            subtitle: Text(
+                              'Difficulty: ${difficulty[0].toUpperCase()}${difficulty.substring(1)}',
+                              style: TextStyle(
+                                color: difficulty == 'easy'
+                                    ? Colors.green
+                                    : difficulty == 'medium'
+                                        ? Colors.orange
+                                        : Colors.red,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            trailing: Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: Colors.blue[50],
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Icon(
+                                difficulty == 'easy'
+                                    ? Icons.star_border
+                                    : difficulty == 'medium'
+                                        ? Icons.star_half
+                                        : Icons.star,
+                                color: Colors.amber,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    );
+                  },
+                ),
+              ),
+              
+              // Button to clear scores
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('Clear Leaderboard?'),
+                        content: const Text(
+                          'This will remove all your scores. This action cannot be undone.'
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text('Cancel'),
+                          ),
+                          TextButton(
+                            onPressed: () async {
+                              final prefs = await SharedPreferences.getInstance();
+                              await prefs.remove('scores');
+                              if (context.mounted) {
+                                Navigator.pop(context);
+                                Navigator.pushReplacement(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => const LeaderboardScreen(),
+                                  ),
+                                );
+                              }
+                            },
+                            style: TextButton.styleFrom(
+                              foregroundColor: Colors.red,
+                            ),
+                            child: const Text('Clear All'),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.delete),
+                  label: const Text('Clear Leaderboard'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Add a cute animated avatar to enhance the app's kiddie appeal
+class KidAvatar extends StatefulWidget {
+  const KidAvatar({Key? key}) : super(key: key);
+
+  @override
+  State<KidAvatar> createState() => _KidAvatarState();
+}
+
+class _KidAvatarState extends State<KidAvatar> with TickerProviderStateMixin {
+  late AnimationController _blinkController;
+  late AnimationController _waveController;
+  
+  @override
+  void initState() {
+    super.initState();
+    
+    // Animation for blinking
+    _blinkController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 200),
+    );
+    
+    _startBlinking();
+    
+    // Animation for waving
+    _waveController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+    
+    Future.delayed(const Duration(seconds: 2), () {
+      _waveController.repeat(reverse: true);
+    });
+  }
+  
+  void _startBlinking() async {
+    while (mounted) {
+      await Future.delayed(Duration(seconds: 2 + Random().nextInt(4)));
+      if (mounted) {
+        await _blinkController.forward();
+        await _blinkController.reverse();
+      }
+    }
+  }
+  
+  @override
+  void dispose() {
+    _blinkController.dispose();
+    _waveController.dispose();
+    super.dispose();
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 100,
+      height: 150,
+      child: Stack(
+        children: [
+          // Head
+          Positioned(
+            top: 0,
+            left: 20,
+            child: Container(
+              width: 60,
+              height: 60,
+              decoration: BoxDecoration(
+                color: Colors.orange[200],
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 4,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          
+          // Eyes
+          Positioned(
+            top: 20,
+            left: 32,
+            child: AnimatedBuilder(
+              animation: _blinkController,
+              builder: (context, child) {
+                return Container(
+                  width: 10,
+                  height: _blinkController.value > 0.5 ? 1 : 10,
+                  decoration: BoxDecoration(
+                    color: Colors.black,
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                );
+              },
+            ),
+          ),
+          Positioned(
+            top: 20,
+            left: 58,
+            child: AnimatedBuilder(
+              animation: _blinkController,
+              builder: (context, child) {
+                return Container(
+                  width: 10,
+                  height: _blinkController.value > 0.5 ? 1 : 10,
+                  decoration: BoxDecoration(
+                    color: Colors.black,
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                );
+              },
+            ),
+          ),
+          
+          // Smile
+          Positioned(
+            top: 35,
+            left: 40,
+            child: Container(
+              width: 20,
+              height: 10,
+              decoration: const BoxDecoration(
+                color: Colors.red,
+                borderRadius: BorderRadius.only(
+                  bottomLeft: Radius.circular(10),
+                  bottomRight: Radius.circular(10),
+                ),
+              ),
+            ),
+          ),
+          
+          // Body
+          Positioned(
+            top: 60,
+            left: 35,
+            child: Container(
+              width: 30,
+              height: 40,
+              decoration: BoxDecoration(
+                color: Colors.blue[400],
+                borderRadius: BorderRadius.circular(10),
+              ),
+            ),
+          ),
+          
+          // Arms
+          Positioned(
+            top: 65,
+            left: 15,
+            child: AnimatedBuilder(
+              animation: _waveController,
+              builder: (context, child) {
+                return Transform.rotate(
+                  angle: -0.5 + (_waveController.value * 0.5),
+                  origin: const Offset(20, 0),
+                  child: Container(
+                    width: 25,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      color: Colors.blue[400],
+                      borderRadius: BorderRadius.circular(5),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          Positioned(
+            top: 65,
+            left: 60,
+            child: Container(
+              width: 25,
+              height: 10,
+              decoration: BoxDecoration(
+                color: Colors.blue[400],
+                borderRadius: BorderRadius.circular(5),
+              ),
+            ),
+          ),
+          
+          // Legs
+          Positioned(
+            top: 100,
+            left: 35,
+            child: Container(
+              width: 10,
+              height: 20,
+              decoration: BoxDecoration(
+                color: Colors.green[400],
+                borderRadius: BorderRadius.circular(5),
+              ),
+            ),
+          ),
+          Positioned(
+            top: 100,
+            left: 55,
+            child: Container(
+              width: 10,
+              height: 20,
+              decoration: BoxDecoration(
+                color: Colors.green[400],
+                borderRadius: BorderRadius.circular(5),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Settings page
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({Key? key}) : super(key: key);
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  bool _soundEnabled = true;
+  bool _musicEnabled = true;
+  bool _vibrationEnabled = true;
+  double _animationSpeed = 1.0;
+  
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+  
+  Future<void> _loadSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      _soundEnabled = prefs.getBool('sound_enabled') ?? true;
+      _musicEnabled = prefs.getBool('music_enabled') ?? true;
+      _vibrationEnabled = prefs.getBool('vibration_enabled') ?? true;
+      _animationSpeed = prefs.getDouble('animation_speed') ?? 1.0;
+    });
+  }
+  
+  Future<void> _saveSettings() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('sound_enabled', _soundEnabled);
+    await prefs.setBool('music_enabled', _musicEnabled);
+    await prefs.setBool('vibration_enabled', _vibrationEnabled);
+    await prefs.setDouble('animation_speed', _animationSpeed);
+  }
+  
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Settings'),
+        backgroundColor: Colors.blue,
+        foregroundColor: Colors.white,
+        elevation: 0,
+      ),
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Colors.blue, Colors.purple.withOpacity(0.7)],
+          ),
+        ),
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            // Settings card
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.9),
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 10,
+                    spreadRadius: 1,
+                  ),
+                ],
+              ),
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Game Settings',
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blue,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  
+                  // Sound toggle
+                  SwitchListTile(
+                    title: const Text(
+                      'Sound Effects',
+                      style: TextStyle(fontSize: 18),
+                    ),
+                    subtitle: const Text('Enable game sounds'),
+                    value: _soundEnabled,
+                    onChanged: (value) {
+                      setState(() {
+                        _soundEnabled = value;
+                      });
+                      _saveSettings();
+                    },
+                    secondary: const Icon(Icons.volume_up, color: Colors.blue),
+                  ),
+                  
+                  const Divider(),
+                  
+                  // Music toggle
+                  SwitchListTile(
+                    title: const Text(
+                      'Background Music',
+                      style: TextStyle(fontSize: 18),
+                    ),
+                    subtitle: const Text('Play music while playing'),
+                    value: _musicEnabled,
+                    onChanged: (value) {
+                      setState(() {
+                        _musicEnabled = value;
+                      });
+                      _saveSettings();
+                    },
+                    secondary: const Icon(Icons.music_note, color: Colors.green),
+                  ),
+                  
+                  const Divider(),
+                  
+                  // Vibration toggle
+                  SwitchListTile(
+                    title: const Text(
+                      'Vibration',
+                      style: TextStyle(fontSize: 18),
+                    ),
+                    subtitle: const Text('Vibrate on interactions'),
+                    value: _vibrationEnabled,
+                    onChanged: (value) {
+                      setState(() {
+                        _vibrationEnabled = value;
+                      });
+                      _saveSettings();
+                    },
+                    secondary: const Icon(Icons.vibration, color: Colors.orange),
+                  ),
+                  
+                  const Divider(),
+                  
+                  // Animation speed slider
+                  ListTile(
+                    leading: const Icon(Icons.speed, color: Colors.purple),
+                    title: const Text(
+                      'Animation Speed',
+                      style: TextStyle(fontSize: 18),
+                    ),
+                    subtitle: Slider(
+                      value: _animationSpeed,
+                      min: 0.5,
+                      max: 2.0,
+                      divisions: 3,
+                      label: _animationSpeed == 0.5
+                          ? 'Slow'
+                          : _animationSpeed == 1.0
+                              ? 'Normal'
+                              : _animationSpeed == 1.5
+                                  ? 'Fast'
+                                  : 'Very Fast',
+                      onChanged: (value) {
+                        setState(() {
+                          _animationSpeed = value;
+                        });
+                      },
+                      onChangeEnd: (value) {
+                        _saveSettings();
+                      },
+                      activeColor: Colors.purple,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            
+            const SizedBox(height: 30),
+            
+            // About section
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.9),
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 10,
+                    spreadRadius: 1,
+                  ),
+                ],
+              ),
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'About',
+                    style: TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.blue,
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  ListTile(
+                    leading: const Icon(Icons.info, color: Colors.blue),
+                    title: const Text('Version'),
+                    subtitle: const Text('1.0.0'),
+                    onTap: () {},
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.star, color: Colors.amber),
+                    title: const Text('Rate Us'),
+                    subtitle: const Text('Tell us what you think'),
+                    onTap: () {
+                      // Would launch app store review in a real app
+                      showDialog(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: const Text('Rate Us'),
+                          content: const Text('Would open app store rating in a real app'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: const Text('OK'),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.feedback, color: Colors.green),
+                    title: const Text('Send Feedback'),
+                    subtitle: const Text('Help us improve'),
+                    onTap: () {
+                      // Would launch email app in a real app
+                      showDialog(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: const Text('Feedback'),
+                          content: const Text('Would open email in a real app'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: const Text('OK'),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.privacy_tip, color: Colors.red),
+                    title: const Text('Privacy Policy'),
+                    onTap: () {
+                      // Would launch browser in a real app
+                      showDialog(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: const Text('Privacy Policy'),
+                          content: const Text('Would open privacy policy in browser in a real app'),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context),
+                              child: const Text('OK'),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+            
+            const SizedBox(height: 30),
+            
+            // Reset button
+            ElevatedButton.icon(
+              onPressed: () {
+                showDialog(
+                  context: context,
+                  builder: (context) => AlertDialog(
+                    title: const Text('Reset All Data?'),
+                    content: const Text(
+                      'This will reset all your progress, scores, and settings. This action cannot be undone.'
+                    ),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Cancel'),
+                      ),
+                      TextButton(
+                        onPressed: () async {
+                          final prefs = await SharedPreferences.getInstance();
+                          await prefs.clear();
+                          if (context.mounted) {
+                            Navigator.pop(context);
+                            Navigator.pushReplacement(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => const SettingsScreen(),
+                              ),
+                            );
+                          }
+                        },
+                        style: TextButton.styleFrom(
+                          foregroundColor: Colors.red,
+                        ),
+                        child: const Text('Reset All'),
+                      ),
+                    ],
+                  ),
+                );
+              },
+              icon: const Icon(Icons.restore),
+              label: const Text('Reset All Data'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.red,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 15),
+              ),
+            ),
+            
+            const SizedBox(height: 20),
+            
+            // Footer
+            const Center(
+              child: Text(
+                '© 2025 KidsCrossword\nAll rights reserved',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
